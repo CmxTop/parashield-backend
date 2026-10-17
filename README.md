@@ -32,6 +32,8 @@ Supporting infrastructure:
 ParaShield supports two authentication schemes:
 
 - **JWT bearer auth**: the primary frontend flow. Clients request `/api/v1/auth/challenge`, sign the nonce, call `/api/v1/auth/login`, then send `Authorization: Bearer <token>`. `JwtAuthGuard` verifies the token and sets `req.wallet` from the token payload.
+  - `JWT_SECRET` is strictly required and validated at startup: it must be at least 32 characters long. Insecure fallbacks and placeholder values (e.g. previous dev defaults, "changeme", "secret") are rejected.
+  - **Security Notice**: Any environment previously running on the default secret must configure a cryptographically random secret before deploying. Any tokens signed with the legacy default secret should be treated as compromised.
 - **Wallet-header auth**: a legacy request-signature flow for protected API routes. Clients send `x-wallet-address`, `x-wallet-message`, and `x-wallet-signature`; `AuthMiddleware` verifies the Stellar signature and sets `req.wallet`.
 
 Operator-only oracle fetch endpoints require either `x-api-key: <ORACLE_OPERATOR_API_KEY>` or an admin JWT. Public endpoints such as `/api/v1/products`, `/api/v1/oracle/latest/:key`, `/api/v1/health`, and `/docs` do not run wallet-header middleware.
@@ -280,6 +282,13 @@ For reference, successful responses use the complementary envelope:
 ```
 
 Monetary values are returned as strings in 7-decimal fixed-point format matching Stellar asset precision (e.g. `"10.0000000"`).
+
+### BigInt serialization & API contract change (#671)
+
+All `BigInt` values (such as oracle readings, large policy IDs, and 64-bit timestamps or token amounts) are centrally serialized as decimal strings across all JSON responses, SSE streams, logging paths, and error envelopes.
+
+> [!NOTE]
+> **API Contract / Response-Shape Change**: Clients that previously parsed or expected numeric primitives for large integer or BigInt fields must now handle these fields as decimal strings (e.g. `"9223372036854775807"`). Requests accepting numeric IDs parse integer strings safely to `BigInt` and reject invalid, non-numeric, or floating-point input with HTTP 400 without `Number` precision degradation.
 
 ---
 

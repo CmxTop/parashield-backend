@@ -23,6 +23,7 @@ import compression from 'compression';
 import { ConfigService } from '@nestjs/config';
 import { json, urlencoded } from 'express';
 import Redis from 'ioredis';
+import { validateJwtSecret } from './auth/jwt-secret.validator';
 
 const REQUEST_BODY_LIMIT = '1mb';
 const SERVER_TIMEOUT_MS = 30_000;
@@ -65,8 +66,9 @@ async function bootstrap() {
 
   const configService = app.get(ConfigService);
   const jwtSecret = configService.get<string>('JWT_SECRET');
-  if (!jwtSecret) {
-    logger.error('Fatal Error: JWT_SECRET environment variable is required');
+  const jwtSecretValidation = validateJwtSecret(jwtSecret);
+  if (!jwtSecretValidation.valid) {
+    logger.error(`Fatal Error: ${jwtSecretValidation.error}`);
     process.exit(1);
   }
 
@@ -74,6 +76,12 @@ async function bootstrap() {
   // req.ip (used as the rate-limit and auth-lockout key) cannot be spoofed
   // by a client-supplied header. Defaults to trusting no proxies.
   app.set('trust proxy', parseTrustProxy(configService.get<string>('TRUST_PROXY')));
+
+  // #671 — Framework-level JSON replacer for Express so any direct res.json calls
+  // serialize BigInt values as decimal strings instead of throwing.
+  app.set('json replacer', (_key: string, value: unknown) =>
+    typeof value === 'bigint' ? value.toString() : value,
+  );
 
   // Security headers (X-Content-Type-Options, X-Frame-Options, HSTS, etc.)
   app.use(helmet());
