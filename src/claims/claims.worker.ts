@@ -7,6 +7,7 @@ import { ClaimsService } from './claims.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { PolicyService, ProductSummary } from '../policy/policy.service';
 import { transition } from '../policy/policy-status.machine';
+import { StatusEventsService } from '../common/events/status-events.service';
 import { recordWorkerHeartbeat } from '../common/worker-heartbeat';
 import { DistributedLockService } from '../redis/distributed-lock.service';
 
@@ -41,6 +42,7 @@ export class ClaimsWorker {
     private readonly claims: ClaimsService,
     private readonly prisma: PrismaService,
     private readonly policyService: PolicyService,
+    private readonly statusEvents: StatusEventsService,
     @Inject('REDIS_CLIENT') private readonly redis: Redis,
     @Optional() lockService?: DistributedLockService,
     @Optional() private readonly configService?: ConfigService,

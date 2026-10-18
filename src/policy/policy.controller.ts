@@ -59,6 +59,7 @@ const SSE_TCP_KEEPALIVE_MS = 30_000;
 
 @ApiTags('policy')
 @Controller()
+@UseInterceptors(CacheControlInterceptor)
 @ApiExtraModels(ResponseDto, PaginatedResponseDto, ProductResponseDto, PolicyResponseDto, CancellationResponseDto)
 @ApiExtraModels(ResponseDto, PaginatedResponseDto, ProductResponseDto, PolicyResponseDto, PolicyStatusEventDto)
 export class PolicyController {
