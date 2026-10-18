@@ -2,6 +2,7 @@ import {
   Injectable,
   Inject,
   Logger,
+  BadRequestException,
   ServiceUnavailableException,
   BadRequestException,
 } from "@nestjs/common";
@@ -707,6 +708,7 @@ export class OracleService implements OnApplicationShutdown, OnModuleDestroy {
     const startDate = `${year}-${String(month).padStart(2, "0")}-01`;
     const endDate = new Date(year, month, 0);
     const endStr = `${year}-${String(month).padStart(2, "0")}-${endDate.getDate()}`;
+    const key = `rainfall:${lat},${lng}:${year}-${String(month).padStart(2, "0")}`;
 
     // Determine if the requested month is in the past relative to today.
     const today = new Date();
@@ -826,6 +828,7 @@ export class OracleService implements OnApplicationShutdown, OnModuleDestroy {
     const startDate = `${year}-${String(month).padStart(2, "0")}-01`;
     const endDate = new Date(year, month, 0);
     const endStr = `${year}-${String(month).padStart(2, "0")}-${endDate.getDate()}`;
+    const key = `temperature:${lat},${lng}:${year}-${String(month).padStart(2, "0")}`;
 
     const today = new Date();
     const isPastMonth =
