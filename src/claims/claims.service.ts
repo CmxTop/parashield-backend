@@ -12,6 +12,7 @@ import { StatusEventsService } from '../common/events/status-events.service';
 import { ErrorCode } from '../common/errors/error-codes';
 import { compareScaledToThreshold, parseDecimalScaled, parseFixedPointBigInt } from '../common/utils/decimal';
 import { financialBatch, financialTransaction, isSerializationFailure } from '../prisma/financial-transaction';
+import { PolicyStateCacheService, DerivedPolicyState } from './policy-state-cache.service';
 
 export type ClaimResult = 'Paid' | 'Rejected' | 'Expired' | 'AlreadyClaimed' | 'AlreadyProcessed' | 'PolicyNotActive' | 'PendingFinalPeriod';
 
@@ -678,16 +679,34 @@ this.auditOp('Claim', claim.id, ClaimStatus.PROCESSING, ClaimStatus.FAILED, 'Non
     return claim.id;
   }
 
-  async getClaimsByWallet(walletAddress: string, page = 1, limit = 20): Promise<{ data: ClaimSummary[]; total: number; page: number; limit: number }> {
+  async getClaimsByWallet(
+    walletAddress: string,
+    page = 1,
+    limit = 20,
+    cursor?: string,
+  ): Promise<{
+    data: ClaimSummary[];
+    total: number;
+    page: number;
+    limit: number;
+    nextCursor?: string | null;
+    hasMore?: boolean;
+  }> {
     // Clamp to valid bounds; page is 1-based (#114)
     const safePage = Math.max(1, page);
     const safeLimit = Math.min(Math.max(1, limit), 100);
-    this.logger.log(`get_claims_by_wallet: ${walletAddress} page=${safePage} limit=${safeLimit}`);
+    this.logger.log(`get_claims_by_wallet: ${walletAddress} page=${safePage} limit=${safeLimit} cursor=${cursor ?? 'none'}`);
+
+    // #749 — If a cursor is provided, use cursor-based pagination which avoids slow OFFSET scans
+    // on large datasets. Otherwise, fall back to offset pagination for backward compatibility.
+    // Fetch safeLimit + 1 items to determine if a next page exists without extra count query.
     const findClaims = this.prisma.claim.findMany({
       where: { claimant: walletAddress },
       orderBy: [{ submittedAt: 'desc' }, { id: 'desc' }],
-      skip: (safePage - 1) * safeLimit,
-      take: safeLimit,
+      ...(cursor
+        ? { cursor: { id: cursor }, skip: 1 }
+        : { skip: (safePage - 1) * safeLimit }),
+      take: safeLimit + 1,
     });
 
     // #589 — reuse a recent total instead of running COUNT on every request
@@ -708,7 +727,13 @@ this.auditOp('Claim', claim.id, ClaimStatus.PROCESSING, ClaimStatus.FAILED, 'Non
       this.claimCountCache.set(walletAddress, { total, expiresAt: Date.now() + CLAIM_COUNT_CACHE_TTL_MS });
     }
 
-    const summaries = claims.map((claim) => ({
+    const hasMore = claims.length > safeLimit;
+    const paginatedClaims = hasMore ? claims.slice(0, safeLimit) : claims;
+    const nextCursor = hasMore && paginatedClaims.length > 0
+      ? paginatedClaims[paginatedClaims.length - 1].id
+      : null;
+
+    const summaries = paginatedClaims.map((claim) => ({
       id:             claim.id,
       policyId:       claim.policyId,
       claimant:       claim.claimant,
@@ -729,6 +754,8 @@ this.auditOp('Claim', claim.id, ClaimStatus.PROCESSING, ClaimStatus.FAILED, 'Non
       total,
       page: safePage,
       limit: safeLimit,
+      nextCursor,
+      hasMore,
     };
   }
 

@@ -3,6 +3,7 @@ import {
   Inject,
   Logger,
   ServiceUnavailableException,
+  BadRequestException,
 } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 import axios from "axios";
@@ -449,6 +450,8 @@ export class OracleService {
       ? `https://archive-api.open-meteo.com/v1/archive?latitude=${lat}&longitude=${lng}&daily=precipitation_sum&start_date=${startDate}&end_date=${endStr}&timezone=UTC`
       : `https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lng}&daily=precipitation_sum&start_date=${startDate}&end_date=${endStr}&timezone=UTC`;
 
+    const key = `rainfall:${lat},${lng}:${year}-${String(month).padStart(2, "0")}`;
+
     const res = await this.openMeteoBreaker.execute(() =>
       this.executeWithRateLimitBackoff(() =>
         axios.get<{
@@ -508,7 +511,6 @@ export class OracleService {
     const coverage = observedCount / daysInMonth;
     const confidence = Math.round(coverage * 95);
 
-    const key = `rainfall:${lat},${lng}:${year}-${String(month).padStart(2, "0")}`;
     for (const daily of observedReadings) {
       this.assertWithinBounds("rainfall", daily, key);
     }
@@ -562,6 +564,9 @@ export class OracleService {
     const url = isPastMonth
       ? `https://archive-api.open-meteo.com/v1/archive?latitude=${lat}&longitude=${lng}&daily=temperature_2m_max&start_date=${startDate}&end_date=${endStr}&timezone=UTC`
       : `https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lng}&daily=temperature_2m_max&start_date=${startDate}&end_date=${endStr}&timezone=UTC`;
+
+    const key = `temperature:${lat},${lng}:${year}-${String(month).padStart(2, "0")}`;
+
     const res = await this.openMeteoBreaker.execute(() =>
       this.executeWithRateLimitBackoff(() =>
         axios.get<{
@@ -602,7 +607,6 @@ export class OracleService {
     const coverage = temps.length / expectedDays;
     const confidence = Math.round(coverage * 95);
 
-    const key = `temperature:${lat},${lng}:${year}-${String(month).padStart(2, "0")}`;
     // Only validate observed data — an empty window legitimately yields 0 with
     // confidence 0 and is filtered by the worker's confidence gate.
     if (temps.length > 0) {
