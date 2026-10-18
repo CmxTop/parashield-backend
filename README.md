@@ -154,31 +154,102 @@ Multiple origins are comma-separated. The server logs the active origin list at 
 
 ---
 
-## Error handling
+## Database Connection Pool Sizing (#676)
 
-All error responses follow the same envelope shape regardless of endpoint:
+Prisma connection pool sizing and timeouts are configurable via environment variables or directly as query parameters on `DATABASE_URL`.
+
+| Environment Variable | Default | Description | Valid Range |
+|---|---|---|---|
+| `DATABASE_CONNECTION_LIMIT` | `10` | Maximum connections in the pool per application instance | 1 – 500 |
+| `DATABASE_POOL_TIMEOUT` | `10` | Seconds a query waits for an available pool connection before throwing a timeout error | 1 – 300 |
+| `DATABASE_CONNECT_TIMEOUT` | `5` | Seconds establishing a new TCP connection to PostgreSQL may take before timing out | 1 – 120 |
+
+### Precedence
+
+Explicit query parameters in `DATABASE_URL` (e.g. `postgresql://user:pass@host:5432/db?connection_limit=25&pool_timeout=15`) always take precedence over the environment variables. Environment variables are used only when the corresponding query parameter is not present in the URL.
+
+Startup validation verifies all values are positive integers within sane bounds and fails fast with a clear error on misconfiguration.
+
+### Sizing Guidance
+
+When running multiple backend instances (e.g., in Kubernetes, ECS, or behind a load balancer), ensure the aggregate connections from all instances do not exceed PostgreSQL's `max_connections`:
+
+$$\text{Total Connections} = (\text{Number of Instances} \times \text{DATABASE\_CONNECTION\_LIMIT}) + \text{Reserved Connections}$$
+
+**Rule**: $\text{Total Connections} < \text{PostgreSQL } \texttt{max\_connections}$
+
+- **Example 1 (Default)**: 5 instances $\times$ 10 connections = 50 connections. Fits comfortably within a default PostgreSQL `max_connections = 100` setting, leaving 50 connections for database migrations, administrative tasks, and replicas.
+- **Example 2 (High Throughput)**: 10 instances $\times$ 25 connections = 250 connections. Requires PostgreSQL `max_connections` configured to $\ge 300$.
+
+### Pool Monitoring & Health Checks
+
+Pool utilization is monitored continuously via `/api/v1/health`:
+- Exposes `active`, `idle`, `waiting`, `max`, `poolTimeout`, and `connectTimeout`.
+- Flags health as degraded when connection utilization reaches `DB_POOL_EXHAUSTION_WARN_PERCENT` (default 90%) to detect exhaustion before queries queue or fail.
+- Exposes genuine Prisma runtime engine metrics when supported.
+- The effective pool configuration is logged at server startup.
+
+### Load Testing
+
+A k6 stress test script is provided in `loadtest/k6/pool-stress.js` to evaluate pool behavior and latency under concurrent load:
+
+```bash
+# Run pool stress test with k6
+npm run test:load:pool
+
+# Or with custom target URL and thresholds
+BASE_URL=http://localhost:3001/api/v1 k6 run loadtest/k6/pool-stress.js
+```
+
+---
+
+## Error handling (RFC 7807 Problem Details)
+
+All error responses use `Content-Type: application/problem+json` conforming to [RFC 7807](https://datatracker.ietf.org/doc/html/rfc7807). Legacy fields remain present in the response body for backward compatibility, but are deprecated:
 
 ```json
 {
+  "type": "https://parashield.io/errors/not-found",
+  "title": "Not Found",
+  "status": 404,
+  "detail": "Policy not found",
+  "instance": "/api/v1/policies/abc123",
   "success": false,
   "errorCode": "NOT_FOUND",
   "error": "Policy not found",
+  "message": "Policy not found",
   "statusCode": 404,
   "path": "/api/v1/policies/abc123",
   "timestamp": "2024-01-15T10:30:00.000Z"
 }
 ```
 
+### RFC 7807 Members
+
+| Member | Type | Description |
+|---|---|---|
+| `type` | `string (URI)` | Stable URI reference identifying the error type. |
+| `title` | `string` | Short human-readable summary of problem type. |
+| `status` | `number` | HTTP status code. |
+| `detail` | `string` | Human-readable explanation specific to this occurrence. |
+| `instance` | `string (URI)` | Request path that generated the error. |
+| `errors` | `array` | (Extension) Validation error details on 400 validation failures. |
+| `correlationId` | `string` | (Extension) Request correlation ID when header is provided. |
+
+### Legacy Fields (Deprecated)
+
 | Field | Type | Description |
 |---|---|---|
-| `success` | `boolean` | Always `false` for errors. |
-| `errorCode` | `string` | Stable machine-readable code (see table below). Key off this, not `error`. |
-| `error` | `string` \| `object` | Human-readable message, or NestJS validation error details for 400s. May change between versions. |
-| `statusCode` | `number` | Mirrors the HTTP status code. |
-| `path` | `string` | The request path that produced the error. |
+| `success` | `boolean` | Always `false` for errors (Deprecated: use `status`). |
+| `errorCode` | `string` | Stable machine-readable code (Deprecated: use `type`). |
+| `error` | `string` \| `object` | Error message string (Deprecated: use `detail`). |
+| `message` | `string` | Human-readable message (Deprecated: use `detail`). |
+| `statusCode` | `number` | Mirrors the HTTP status code (Deprecated: use `status`). |
+| `path` | `string` | The request path (Deprecated: use `instance`). |
 | `timestamp` | `string` | ISO-8601 UTC timestamp. |
 
 ### Error codes
+
 
 | `errorCode` | HTTP status | When it occurs |
 |---|---|---|
