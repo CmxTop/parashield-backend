@@ -10,6 +10,7 @@ import { Prisma, ClaimStatus, PolicyStatus } from '@prisma/client';
 import { WebhooksService } from '../common/events/webhooks.service';
 import { StatusEventsService } from '../common/events/status-events.service';
 import { ErrorCode } from '../common/errors/error-codes';
+import { compareScaledToThreshold, parseDecimalScaled, parseFixedPointBigInt } from '../common/utils/decimal';
 import { financialBatch, financialTransaction, isSerializationFailure } from '../prisma/financial-transaction';
 
 export type ClaimResult = 'Paid' | 'Rejected' | 'Expired' | 'AlreadyClaimed' | 'AlreadyProcessed' | 'PolicyNotActive' | 'PendingFinalPeriod';
@@ -260,12 +261,14 @@ export class ClaimsService {
     }
     // #245 — Guard against non-numeric threshold values. Product.threshold is a
     // free-text string at the service boundary (Decimal serialised via .toString()).
-    // parseFloat('') or parseFloat('N/A') yields NaN, and BigInt(NaN) throws a
-    // RangeError — crashing mid-flow after the claim row is already PROCESSING.
-    // Treat an unparseable threshold the same as a missing product: fail loud for
-    // manual review and revert the atomic gate so the policy can be retried.
-    const rawThreshold = parseFloat(product.threshold);
-    if (!isFinite(rawThreshold)) {
+    // #712 — Parse it exactly (scaled BigInt) instead of `parseFloat`, which loses
+    // precision and could put a boundary value on the wrong side of the trigger.
+    // An unparseable threshold is treated the same as a missing product: fail loud
+    // for manual review and revert the atomic gate so the policy can be retried.
+    let threshold: bigint;
+    try {
+      threshold = parseDecimalScaled(product.threshold);
+    } catch {
       this.logger.error(
         `Product ${policy.productId} has non-numeric threshold "${product.threshold}" — cannot evaluate trigger for policy ${policyId}, marking claim FAILED for manual review`,
       );
@@ -291,13 +294,13 @@ this.auditOp('Claim', claim.id, ClaimStatus.PROCESSING, ClaimStatus.FAILED, 'Non
       await this.policyStateCache?.invalidate(policyId);
       return 'Rejected';
     }
-    const threshold  = BigInt(Math.round(rawThreshold * 1e7));
     const comparison = product.comparison;
 
-    const readingValue = BigInt(reading.value);
-    const triggerMet = comparison === 'LessThan'
-      ? readingValue < threshold
-      : readingValue > threshold;
+    // #712 — Compare the exact scaled values. Semantics are unchanged: 'LessThan'
+    // triggers strictly below the threshold, otherwise strictly above; a reading
+    // exactly equal to the threshold never triggers.
+    const readingValue = parseFixedPointBigInt(reading.value);
+    const triggerMet = compareScaledToThreshold(readingValue, threshold, comparison);
 
     this.logger.log(
       `Trigger eval: key=${reading.key} value=${reading.value} threshold=${threshold} triggerMet=${triggerMet}`,

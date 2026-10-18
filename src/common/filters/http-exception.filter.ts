@@ -6,6 +6,7 @@ import { Request, Response } from 'express';
 import { errorCodeFromBody, errorCodeFromStatus } from '../errors/error-codes';
 import { serializeBigInt } from '../interceptors/bigint-serializer.interceptor';
 import { buildProblemDetails } from '../errors/problem-details';
+import { applyApiVersionHeaders, resolveRequestedVersion } from '../versioning/api-version';
 
 @Catch()
 export class GlobalExceptionFilter implements ExceptionFilter {
@@ -47,6 +48,14 @@ export class GlobalExceptionFilter implements ExceptionFilter {
 
     const errorCode = errorCodeFromBody(rawResponse) ?? errorCodeFromStatus(status);
     const path = req.originalUrl || req.url;
+
+    // #713 — Error responses never pass through the versioning interceptor's
+    // success path, so stamp the version header here too.
+    const versionHeader = req.headers?.['x-api-version'];
+    applyApiVersionHeaders(
+      res,
+      resolveRequestedVersion(path, Array.isArray(versionHeader) ? versionHeader[0] : versionHeader),
+    );
 
     // #677 — Adopt RFC 7807 problem details with Content-Type application/problem+json.
     // Includes type, title, status, detail, instance, extension members (errors, correlationId),
