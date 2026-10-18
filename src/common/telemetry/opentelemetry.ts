@@ -2,6 +2,34 @@ import { Logger, Injectable, BeforeApplicationShutdown } from '@nestjs/common';
 
 export const DEFAULT_OTEL_SHUTDOWN_TIMEOUT_MS = 5000;
 
+// #754 — health probes are polled every few seconds by load balancers and
+// orchestrators. Each probe would otherwise produce a span and flood the
+// trace backend with noise that drowns out real request traces. The
+// default ignore list covers the global prefix (/api/v1/health) and the
+// bare controller path (/health) so both routed and unrouted probes are
+// excluded. Operators can extend this via
+// OTEL_HTTP_INSTRUMENTATION_IGNORE_URLS (comma-separated URL patterns).
+const DEFAULT_HEALTH_PROBE_IGNORE_URLS = ['/api/v1/health', '/health'];
+
+/**
+ * #754 — resolve the HTTP instrumentation ignore list.
+ *
+ * The configured list always includes the default health probe paths so
+ * deployments that only set OTEL_HTTP_INSTRUMENTATION_IGNORE_URLS for
+ * additional probes still exclude the built-in health endpoints. The env
+ * override is merged in rather than replacing the defaults, so an operator
+ * can never accidentally re-enable tracing on health checks.
+ */
+export function parseIgnoreUrls(env: NodeJS.ProcessEnv = process.env): string[] {
+  const configured = env['OTEL_HTTP_INSTRUMENTATION_IGNORE_URLS'];
+  if (!configured) return [...DEFAULT_HEALTH_PROBE_IGNORE_URLS];
+  const extra = configured
+    .split(',')
+    .map((url) => url.trim())
+    .filter((url) => url.length > 0);
+  return [...new Set([...DEFAULT_HEALTH_PROBE_IGNORE_URLS, ...extra])];
+}
+
 interface OpenTelemetrySdk {
   start: () => Promise<void>;
   shutdown: () => Promise<void>;
@@ -48,7 +76,20 @@ export async function initializeOpenTelemetry(): Promise<void> {
               : undefined,
           })
         : undefined,
-      instrumentations: [getNodeAutoInstrumentations()],
+      // #754 — health check endpoints are polled every few seconds by load
+      // balancers and orchestrators. Without an ignore list every probe
+      // produced a span, drowning real request traces in noise. The HTTP
+      // instrumentation is configured to skip spans for /api/v1/health and
+      // /health so probes stop generating traces. The list is overridable
+      // via OTEL_HTTP_INSTRUMENTATION_IGNORE_URLS (comma-separated) for
+      // deployments that also expose other probe paths.
+      instrumentations: [
+        getNodeAutoInstrumentations({
+          '@opentelemetry/instrumentation-http': {
+            ignoreUrls: parseIgnoreUrls(),
+          },
+        }),
+      ],
     });
 
     await sdk.start();

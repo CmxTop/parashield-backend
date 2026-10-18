@@ -4,6 +4,7 @@ import {
   _resetOpenTelemetryState,
   registerOtelSignalHandlers,
   OpenTelemetryShutdownHook,
+  parseIgnoreUrls,
 } from './opentelemetry';
 
 describe('OpenTelemetry Graceful Shutdown (#715)', () => {
@@ -136,5 +137,49 @@ describe('OpenTelemetry Graceful Shutdown (#715)', () => {
     await new Promise((resolve) => setTimeout(resolve, 50));
 
     expect(mockSdk.shutdown).toHaveBeenCalled();
+  });
+});
+
+// #754 — health check endpoints must not generate OpenTelemetry spans so
+// load-balancer probes don't drown real request traces in noise.
+describe('OpenTelemetry health probe exclusion (#754)', () => {
+  const originalEnv = process.env;
+
+  beforeEach(() => {
+    process.env = { ...originalEnv };
+    delete process.env.OTEL_HTTP_INSTRUMENTATION_IGNORE_URLS;
+  });
+
+  afterEach(() => {
+    process.env = originalEnv;
+  });
+
+  it('ignores the default health probe paths', () => {
+    const urls = parseIgnoreUrls();
+    expect(urls).toContain('/api/v1/health');
+    expect(urls).toContain('/health');
+  });
+
+  it('merges additional patterns from OTEL_HTTP_INSTRUMENTATION_IGNORE_URLS without losing defaults', () => {
+    process.env.OTEL_HTTP_INSTRUMENTATION_IGNORE_URLS = '/ready,/live';
+    const urls = parseIgnoreUrls();
+    expect(urls).toContain('/api/v1/health');
+    expect(urls).toContain('/health');
+    expect(urls).toContain('/ready');
+    expect(urls).toContain('/live');
+  });
+
+  it('dedupes overlapping patterns', () => {
+    process.env.OTEL_HTTP_INSTRUMENTATION_IGNORE_URLS = '/api/v1/health,/metrics';
+    const urls = parseIgnoreUrls();
+    expect(urls.filter((u) => u === '/api/v1/health')).toHaveLength(1);
+    expect(urls).toContain('/metrics');
+  });
+
+  it('always excludes the built-in health endpoints even when the env var is empty', () => {
+    process.env.OTEL_HTTP_INSTRUMENTATION_IGNORE_URLS = '';
+    const urls = parseIgnoreUrls();
+    expect(urls).toContain('/api/v1/health');
+    expect(urls).toContain('/health');
   });
 });
