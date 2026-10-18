@@ -1,3 +1,4 @@
+import { Logger } from '@nestjs/common';
 import { PrismaService } from './prisma.service';
 
 describe('PrismaService', () => {
