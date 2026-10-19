@@ -13,6 +13,10 @@ import { ErrorCode } from '../common/errors/error-codes';
 import { compareScaledToThreshold, parseDecimalScaled, parseFixedPointBigInt } from '../common/utils/decimal';
 import { financialBatch, financialTransaction, isSerializationFailure } from '../prisma/financial-transaction';
 import { PolicyStateCacheService, DerivedPolicyState } from './policy-state-cache.service';
+// #756 — UTC helpers centralise date construction so claim-window
+// comparisons against Prisma's UTC-stored timestamps are auditable and
+// never accidentally rely on server-local timezone behaviour.
+import { utcNow } from '../common/utils/time.utils';
 
 export type ClaimResult = 'Paid' | 'Rejected' | 'Expired' | 'AlreadyClaimed' | 'AlreadyProcessed' | 'PolicyNotActive' | 'PendingFinalPeriod';
 
@@ -123,7 +127,14 @@ export class ClaimsService {
 
     // Expired check — policy.endTime is the authoritative reference, not the
     // lazily-updated status column (the EXPIRED cron runs at best once an hour).
-    if (new Date() > policy.endTime) {
+    // #756 — `now` is constructed via utcNow() so the comparison is explicit
+    // about its UTC basis; policy.endTime is materialised by Prisma as UTC,
+    // and both operands are compared as epoch milliseconds, which are
+    // timezone-independent. Using utcNow() here keeps server-local timezone
+    // out of the comparison and prevents off-by-one-day errors when the
+    // server's local clock is in a non-UTC zone.
+    const now = utcNow();
+    if (now > policy.endTime) {
       this.logger.warn(`Policy ${policyId} coverage period ended at ${policy.endTime.toISOString()}`);
       return 'Expired';
     }
@@ -136,7 +147,7 @@ export class ClaimsService {
     // touching any state until endTime has actually passed — the next hourly
     // tick will pick this policy back up (it's still ACTIVE with the same
     // endTime) once the full period's data is available.
-    if (new Date() < policy.endTime) {
+    if (now < policy.endTime) {
       this.logger.log(
         `Policy ${policyId} endTime (${policy.endTime.toISOString()}) not yet reached — deferring trigger evaluation`,
       );
@@ -512,7 +523,7 @@ export class ClaimsService {
    * Every write is guarded on status = PROCESSING and the same updatedAt
    * cutoff, so a policy that makes progress concurrently is left alone.
    */
-  async recoverStuckProcessingPolicies(now: Date = new Date()): Promise<StuckPolicyRecoverySummary> {
+  async recoverStuckProcessingPolicies(now: Date = utcNow()): Promise<StuckPolicyRecoverySummary> {
     const configured = parseInt(this.config.get<string>('CLAIMS_STUCK_PROCESSING_MINUTES') ?? '', 10);
     const stuckMinutes = Number.isFinite(configured) && configured > 0 ? configured : DEFAULT_STUCK_PROCESSING_MINUTES;
     const cutoff = new Date(now.getTime() - stuckMinutes * 60 * 1000);
@@ -656,7 +667,10 @@ export class ClaimsService {
 
     // Expired check — policy.endTime is the authoritative reference, not the
     // lazily-updated status column (the EXPIRED cron runs at best once an hour).
-    if (new Date() > policy.endTime) {
+    // #756 — comparison uses utcNow() against the UTC-stored policy.endTime so
+    // a server running in a non-UTC timezone can't push a claim past the
+    // coverage boundary a day early or late.
+    if (utcNow() > policy.endTime) {
       throw new ConflictException({
         message: `Policy ${policyId} coverage period ended at ${policy.endTime.toISOString()}`,
         errorCode: ErrorCode.CLAIM_POLICY_EXPIRED,

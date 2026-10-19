@@ -10,6 +10,8 @@ import { transition } from '../policy/policy-status.machine';
 import { StatusEventsService } from '../common/events/status-events.service';
 import { recordWorkerHeartbeat } from '../common/worker-heartbeat';
 import { DistributedLockService } from '../redis/distributed-lock.service';
+// #756 — UTC helpers make the timezone basis of date comparisons explicit.
+import { utcNow, utcPlusMs } from '../common/utils/time.utils';
 
 const BATCH_SIZE = 10;
 const PRODUCTS_PAGE_SIZE = 100;
@@ -106,8 +108,12 @@ export class ClaimsWorker {
       this.logger.error('Stuck PROCESSING recovery failed', err);
     }
 
-    const now        = new Date();
-    const oneHourOut = new Date(now.getTime() + 60 * 60 * 1000);
+    // #756 — `now` and `oneHourOut` are constructed via utcNow()/utcPlusMs()
+    // so the lookahead window is anchored to the same UTC basis as the
+    // UTC-stored policy.endTime; without this a server in a non-UTC zone
+    // could shift the scan window by up to a day.
+    const now        = utcNow();
+    const oneHourOut = utcPlusMs(now, 60 * 60 * 1000);
 
     const expiringPolicies = await this.prisma.policy.findMany({
       where: {
