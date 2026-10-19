@@ -206,11 +206,6 @@ export class PolicyStateCacheService implements OnModuleInit, OnModuleDestroy {
    * Never caches failed computations.
    */
   async getDerivedPolicyState(policyId: string, now: Date = new Date()): Promise<DerivedPolicyState | null> {
-    // #756 — default `now` is the current instant; comparisons below use
-    // epoch milliseconds (getTime / Date.now), which are timezone-
-    // independent, so the expiry evaluation is correct regardless of the
-    // server's local timezone. Callers may pass an explicit UTC Date for
-    // deterministic testing.
     const nowMs = now.getTime();
 
     // 1. Check in-flight computation (stampede protection)
